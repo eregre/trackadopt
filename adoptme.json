@@ -1,5 +1,4 @@
 [
-  "DECOMPILED ALL",
   "Workspace.PlayerCharacters.ringta0.MaxZoomDistance",
   "Workspace.PlayerCharacters.ringta0.Animate",
   "Players.ringta0.PlayerScripts.BootstrapClient",
@@ -3561,6 +3560,5 @@
   "ReplicatedStorage.CmdrClient.Shared.Command",
   "ReplicatedStorage.CmdrClient.Shared.Dispatcher",
   "ReplicatedStorage.CmdrClient.Shared.Registry",
-  "ReplicatedStorage.CmdrClient.Shared.Util",
-  "END OF EXPORT"
+  "ReplicatedStorage.CmdrClient.Shared.Util"
 ]
