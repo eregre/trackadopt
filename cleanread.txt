@@ -1,0 +1,170 @@
+import re, hashlib, os
+
+INPUT_FILE  = "decompiled_all.txt"
+OUTPUT_FILE = "decompiled_all_deduped.txt"
+TMP_FILE    = "dedup_tmp.txt"
+DIVIDER80   = "=" * 80
+
+def md5(t):
+    return hashlib.md5(t.encode("utf-8", errors="replace")).hexdigest()
+
+def normalise(path):
+    m = re.match(r"^(Workspace|Players)\.([A-Za-z0-9_]+)(\..+)$", path)
+    return f"{m.group(1)}.<PLAYER>{m.group(3)}" if m else path
+
+SCRIPT_HDR = re.compile(r"^===== (.+?) =====$")
+
+def main():
+    print(f"Reading {INPUT_FILE} ({os.path.getsize(INPUT_FILE)/1e6:.1f} MB)...")
+
+    seen_code  = {}   # md5 -> canonical_path
+    seen_paths = {}   # md5 -> list of norm paths
+    path_order = []   # unique norm paths, first-seen order
+    path_set   = set()
+
+    total_scripts = 0
+    dup_scripts   = 0
+    file_blocks   = 0
+
+    cur_path  = None
+    cur_lines = []
+    in_content = False   # True once we've passed "--- FULL CONTENT ---" in current block
+
+    tmp = open(TMP_FILE, "w", encoding="utf-8")
+
+    def flush():
+        nonlocal total_scripts, dup_scripts
+        if cur_path is None:
+            return
+        code = "\n".join(cur_lines).strip()
+        if not code:
+            return
+        total_scripts += 1
+        h    = md5(code)
+        norm = normalise(cur_path)
+
+        if norm not in path_set:
+            path_order.append(norm)
+            path_set.add(norm)
+
+        if h not in seen_code:
+            seen_code[h] = norm
+            seen_paths[h] = [norm]
+            tmp.write(f"===== {norm} =====\n")
+            tmp.write(f"__H__{h}__\n")
+            tmp.write(code + "\n\n")
+        else:
+            dup_scripts += 1
+            if norm not in seen_paths[h]:
+                seen_paths[h].append(norm)
+
+    # Use a line iterator with one-line lookahead
+    with open(INPUT_FILE, "r", encoding="utf-8", errors="replace") as f:
+        prev = None          # previous line
+        for raw in f:
+            line = raw.rstrip("\n")
+
+            # Detect start of a FILE block: DIVIDER80 followed by "FILE:"
+            if prev == DIVIDER80 and line.startswith("FILE:"):
+                # Flush whatever script we were building (if any)
+                flush()
+                cur_path  = None
+                cur_lines = []
+                in_content = False
+                file_blocks += 1
+                if file_blocks % 100 == 0:
+                    print(f"  {file_blocks} blocks  unique={len(seen_code):,}  dups={dup_scripts:,}")
+                prev = line
+                continue
+
+            # Detect "--- FULL CONTENT ---" to enter script-collecting mode
+            if line.startswith("--- FULL CONTENT ---"):
+                in_content = True
+                prev = line
+                continue
+
+            if not in_content:
+                prev = line
+                continue
+
+            # Inside content — look for individual script headers
+            m = SCRIPT_HDR.match(line)
+            if m:
+                flush()
+                cur_path  = m.group(1).strip()
+                cur_lines = []
+            elif prev == DIVIDER80 and line.startswith("FILE:"):
+                pass   # already handled above
+            elif line == DIVIDER80 and in_content:
+                # Could be the start of a new FILE block — handled next iteration
+                # Don't accumulate the divider itself into script lines
+                pass
+            else:
+                if cur_path is not None:
+                    cur_lines.append(line)
+
+            prev = line
+
+    flush()
+    tmp.close()
+
+    unique_scripts = len(seen_code)
+    sorted_paths   = sorted(path_order)
+
+    print(f"\nPass 1 done:")
+    print(f"  File blocks            : {file_blocks:,}")
+    print(f"  Total script instances : {total_scripts:,}")
+    print(f"  Unique scripts         : {unique_scripts:,}")
+    print(f"  Duplicates removed     : {dup_scripts:,}")
+    print(f"  Unique paths           : {len(sorted_paths):,}")
+
+    # ── Assemble output ──────────────────────────────────────────────────────
+    print(f"\nAssembling {OUTPUT_FILE}...")
+    ALIAS_RE = re.compile(r"^__H__([a-f0-9]{32})__$")
+
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as out:
+        out.write(DIVIDER80 + "\n")
+        out.write("DECOMPILED ALL — DEDUPLICATED (script-level)\n")
+        out.write(DIVIDER80 + "\n")
+        out.write(f"Total script instances : {total_scripts:,}\n")
+        out.write(f"Unique scripts         : {unique_scripts:,}\n")
+        out.write(f"Duplicates removed     : {dup_scripts:,}\n")
+        out.write(f"Unique paths           : {len(sorted_paths):,}\n")
+        out.write(DIVIDER80 + "\n\n")
+
+        # All paths index at the top
+        out.write(f"--- ALL PATHS INDEX ({len(sorted_paths)}) ---\n")
+        for p in sorted_paths:
+            out.write(p + "\n")
+        out.write("\n" + DIVIDER80 + "\nUNIQUE SCRIPTS\n" + DIVIDER80 + "\n\n")
+
+        # Stream unique script blocks from temp file
+        with open(TMP_FILE, "r", encoding="utf-8", errors="replace") as tmp2:
+            for line in tmp2:
+                line = line.rstrip("\n")
+                m = ALIAS_RE.match(line)
+                if m:
+                    h = m.group(1)
+                    canonical = seen_code.get(h, "")
+                    aliases = [p for p in seen_paths.get(h, []) if p != canonical]
+                    if aliases:
+                        note = ", ".join(aliases[:5])
+                        if len(aliases) > 5:
+                            note += f" (+{len(aliases)-5} more)"
+                        out.write(f"-- ALSO SEEN AS: {note}\n")
+                else:
+                    out.write(line + "\n")
+
+        out.write(DIVIDER80 + "\nEND OF EXPORT\n" + DIVIDER80 + "\n")
+
+    os.remove(TMP_FILE)
+
+    in_sz  = os.path.getsize(INPUT_FILE)
+    out_sz = os.path.getsize(OUTPUT_FILE)
+    print(f"\nDone.")
+    print(f"  Input  : {in_sz/1e6:.1f} MB")
+    print(f"  Output : {out_sz/1e6:.1f} MB  ({(1-out_sz/in_sz)*100:.1f}% reduction)")
+    print(f"  Saved  : {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
